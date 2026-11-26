@@ -1,0 +1,55 @@
+{
+    "meta": {
+        "title": "英语启蒙 · 校园与生活",
+        "note": "内置英语体验词包，可继续导入自己的单词表。听写时朗读英文，并显示中文释义。"
+    },
+    "packs": [
+        {
+            "id": "en-starter",
+            "title": "英语启蒙 · 校园与生活",
+            "lang": "en",
+            "words": [
+                { "text": "apple", "meaning": "苹果" },
+                { "text": "banana", "meaning": "香蕉" },
+                { "text": "orange", "meaning": "橙子" },
+                { "text": "water", "meaning": "水" },
+                { "text": "milk", "meaning": "牛奶" },
+                { "text": "bread", "meaning": "面包" },
+                { "text": "school", "meaning": "学校" },
+                { "text": "teacher", "meaning": "老师" },
+                { "text": "student", "meaning": "学生" },
+                { "text": "friend", "meaning": "朋友" },
+                { "text": "book", "meaning": "书" },
+                { "text": "pencil", "meaning": "铅笔" },
+                { "text": "ruler", "meaning": "尺子" },
+                { "text": "bag", "meaning": "书包" },
+                { "text": "desk", "meaning": "书桌" },
+                { "text": "chair", "meaning": "椅子" },
+                { "text": "window", "meaning": "窗户" },
+                { "text": "door", "meaning": "门" },
+                { "text": "classroom", "meaning": "教室" },
+                { "text": "playground", "meaning": "操场" },
+                { "text": "morning", "meaning": "早晨" },
+                { "text": "afternoon", "meaning": "下午" },
+                { "text": "evening", "meaning": "傍晚" },
+                { "text": "family", "meaning": "家庭" },
+                { "text": "mother", "meaning": "妈妈" },
+                { "text": "father", "meaning": "爸爸" },
+                { "text": "sister", "meaning": "姐妹" },
+                { "text": "brother", "meaning": "兄弟" },
+                { "text": "happy", "meaning": "开心的" },
+                { "text": "strong", "meaning": "强壮的" },
+                { "text": "beautiful", "meaning": "美丽的" },
+                { "text": "listen", "meaning": "听" },
+                { "text": "speak", "meaning": "说" },
+                { "text": "read", "meaning": "读" },
+                { "text": "write", "meaning": "写" },
+                { "text": "study", "meaning": "学习" },
+                { "text": "practice", "meaning": "练习" },
+                { "text": "remember", "meaning": "记住" },
+                { "text": "together", "meaning": "一起" },
+                { "text": "wonderful", "meaning": "精彩的" }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="paper">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f6f1e6">
+    <meta name="description" content="MemoryToMe 记忆小站：按艾宾浩斯曲线安排每天的中文听写与英文背单词。">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="MemoryToMe">
+    <title>MemoryToMe · 记忆小站</title>
+    <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="app-shell" id="app-shell">
+        <aside class="sidebar" aria-label="主导航">
+            <a class="brand" href="#/today">
+                <span class="brand-mark" aria-hidden="true">记</span>
+                <span class="brand-text">
+                    <strong>MemoryToMe</strong>
+                    <small>记忆小站</small>
+                </span>
+            </a>
+
+            <nav class="side-nav">
+                <a href="#/today" data-nav="today">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h6"/></svg>
+                    </span>
+                    <span>今日听写</span>
+                </a>
+                <a href="#/words" data-nav="words">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="19" r="2.2"/></svg>
+                    </span>
+                    <span>我的词库</span>
+                </a>
+                <a href="#/import" data-nav="import">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                    </span>
+                    <span>导入词库</span>
+                </a>
+                <a href="#/stats" data-nav="stats">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+                    </span>
+                    <span>学习统计</span>
+                </a>
+                <a href="#/settings" data-nav="settings">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8.96 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+                    </span>
+                    <span>设置</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-card" id="streak-card">
+                <span class="flame" aria-hidden="true">🔥</span>
+                <div>
+                    <strong id="streak-num">0 天</strong>
+                    <small>连续打卡</small>
+                </div>
+            </div>
+
+            <div class="sidebar-foot">
+                <button class="theme-toggle" id="theme-toggle" type="button" aria-label="切换主题">
+                    <span class="theme-dot"></span>
+                    <span id="theme-label">暖纸</span>
+                </button>
+                <p>每天一点点，记得更牢。</p>
+            </div>
+        </aside>
+
+        <div class="main-wrap">
+            <header class="mobile-topbar">
+                <a class="brand compact" href="#/today">
+                    <span class="brand-mark" aria-hidden="true">记</span>
+                    <span class="brand-text"><strong>MemoryToMe</strong></span>
+                </a>
+                <div class="topbar-actions">
+                    <span class="chip streak-chip" id="mobile-streak">🔥 0</span>
+                    <button class="icon-btn" id="mobile-theme" type="button" aria-label="切换主题">◐</button>
+                </div>
+            </header>
+
+            <main id="app" class="app-main" aria-live="polite">
+                <div class="page-loading">
+                    <div class="loader"></div>
+                    <p>正在打开记忆小站…</p>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <nav class="bottom-nav" aria-label="底部导航">
+        <a href="#/today" data-nav="today"><span>今日</span></a>
+        <a href="#/words" data-nav="words"><span>词库</span></a>
+        <a href="#/import" data-nav="import"><span>导入</span></a>
+        <a href="#/stats" data-nav="stats"><span>统计</span></a>
+        <a href="#/settings" data-nav="settings"><span>设置</span></a>
+    </nav>
+
+    <div id="toast-root" class="toast-root" aria-live="polite"></div>
+    <div id="modal-root" class="modal-root"></div>
+
+    <noscript>
+        <div class="noscript">MemoryToMe 需要启用 JavaScript 才能使用。</div>
+    </noscript>
+
+    <script type="module" src="/js/app.js"></script>
+</body>
+</html>

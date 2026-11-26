@@ -1,0 +1,50 @@
+{
+  "name": "memorytome",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MemoryToMe · 给小学生的艾宾浩斯听写小站",
+  "main": "server/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/godmoon/MemoryToMe.git"
+  },
+  "homepage": "https://github.com/godmoon/MemoryToMe#readme",
+  "bugs": {
+    "url": "https://github.com/godmoon/MemoryToMe/issues"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "check": "node scripts/check.mjs",
+    "build:seed": "node scripts/build-seed.mjs",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:restart": "pm2 restart memorytome",
+    "pm2:stop": "pm2 stop memorytome",
+    "pm2:logs": "pm2 logs memorytome"
+  },
+  "keywords": [
+    "dictation",
+    "spaced-repetition",
+    "ebbinghaus",
+    "chinese",
+    "education",
+    "primary-school",
+    "vocabulary",
+    "pinyin",
+    "self-hosted",
+    "sqlite",
+    "express",
+    "webapp",
+    "kids"
+  ],
+  "author": "godmoon",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.3.0",
+    "pinyin-pro": "^3.29.5"
+  }
+}
