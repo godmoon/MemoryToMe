@@ -20,7 +20,7 @@ function clampIndex(value, max) {
     return Math.min(Math.max(Number(value) || 0, 0), Math.max(0, max));
 }
 
-function readWrong(key) {
+function readIdSet(key) {
     try {
         const list = JSON.parse(localStorage.getItem(key) || '[]');
         return new Set(Array.isArray(list) ? list.map(Number) : []);
@@ -29,7 +29,7 @@ function readWrong(key) {
     }
 }
 
-function writeWrong(key, set) {
+function writeIdSet(key, set) {
     try {
         localStorage.setItem(key, JSON.stringify([...set]));
     } catch {
@@ -110,12 +110,24 @@ export async function render(root, ctx, id) {
 
     const INDEX_KEY = `mt-dictation-${id}`;
     const WRONG_KEY = `mt-dictation-wrong-${id}`;
-    let index = clampIndex(localStorage.getItem(INDEX_KEY), items.length - 1);
+    const HEARD_KEY = `mt-dictation-heard-${id}`;
+    const savedIndex = clampIndex(localStorage.getItem(INDEX_KEY), items.length - 1);
+    // 部分批改过的会话，从第一个还没批改的词继续听
+    const firstPending = items.findIndex((item) => !item.result);
+    let index = firstPending > savedIndex ? firstPending : savedIndex;
     let showPinyin = store.settings?.showPinyin !== false;
     let showMeaning = store.settings?.showMeaning !== false;
     let autoSpeak = store.settings?.autoSpeak !== false;
     let peek = false;
-    const markedWrong = readWrong(WRONG_KEY);
+    const markedWrong = readIdSet(WRONG_KEY);
+    const heard = readIdSet(HEARD_KEY);
+    // 兼容旧版本：没有“听过”记录时，按已保存的进度补上；
+    // 部分批改过的会话，第一个没批改的词之前的词都已经听过
+    if (!heard.size) {
+        const baseline = Math.max(savedIndex, firstPending > 0 ? firstPending - 1 : 0);
+        for (let i = 0; i <= baseline; i += 1) heard.add(items[i].word.id);
+        writeIdSet(HEARD_KEY, heard);
+    }
 
     function current() {
         return items[index];
@@ -157,6 +169,11 @@ export async function render(root, ctx, id) {
     function render() {
         const item = current();
         const word = item.word;
+        // 记录已经听过的词，批改时只批改这些
+        if (!heard.has(word.id)) {
+            heard.add(word.id);
+            writeIdSet(HEARD_KEY, heard);
+        }
         const last = index === items.length - 1;
         const wrong = markedWrong.has(word.id);
         const progress = Math.round(((index + 1) / items.length) * 100);
@@ -274,7 +291,7 @@ export async function render(root, ctx, id) {
                 markedWrong.add(wordId);
                 toast('已标红，批改时会默认判错', 'success');
             }
-            writeWrong(WRONG_KEY, markedWrong);
+            writeIdSet(WRONG_KEY, markedWrong);
             render();
         });
 

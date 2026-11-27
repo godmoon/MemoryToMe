@@ -54,7 +54,10 @@ function planCard(kind, value, total, title, desc) {
 function activeProgress(session) {
     const total = session.total || session.items.length || 0;
     const saved = Number(localStorage.getItem(`mt-dictation-${session.id}`)) || 0;
-    return { total, index: Math.min(Math.max(saved, 0), Math.max(0, total - 1)) };
+    // 已经批改过的词一定听过，换浏览器或清缓存后也不会把进度算回开头
+    const graded = (session.items || []).filter((item) => item.result).length;
+    const base = Math.max(saved, graded);
+    return { total, index: Math.min(base, Math.max(0, total - 1)) };
 }
 
 const EXTRA_COUNT_KEY = 'mt-extra-count';
@@ -153,7 +156,7 @@ export async function render(root, ctx) {
             <p>正在看看今天该听写什么…</p>
         </div>`;
 
-    const lang = ctx.store.settings?.lang || 'zh';
+    const lang = 'zh';
     const [todayData, heatmap, difficult] = await Promise.all([
         api.get(`/api/session/today?lang=${lang}`),
         api.get('/api/stats/heatmap?days=84'),
@@ -163,7 +166,7 @@ export async function render(root, ctx) {
     const active = todayData.active;
     const lastDone = todayData.lastDone;
     const preview = todayData.preview || {};
-    const totalWords = ctx.store.overview?.total ?? 0;
+    const totalWords = todayData.totalWords ?? 0;
     const streak = ctx.store.overview?.streak?.current ?? 0;
 
     let percent = 0;

@@ -106,6 +106,10 @@ export function buildPlan(words, settings, date = todayStr()) {
     const order = settings.order || 'mixed';
 
     const active = words.filter((w) => !w.archived && w.status !== 'suspended');
+    // 被“提前”的词排在最前面，数字越小越先复习
+    const advanced = active
+        .filter((w) => w.advanceRank > 0 && w.dueDate && w.dueDate <= date)
+        .sort((a, b) => a.advanceRank - b.advanceRank || a.id - b.id);
     const due = active
         .filter((w) => w.status !== 'new' && w.dueDate && w.dueDate <= date)
         .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || b.lapses - a.lapses || a.id - b.id);
@@ -137,19 +141,33 @@ export function buildPlan(words, settings, date = todayStr()) {
         }
     };
 
-    const reviewTarget = Math.max(0, target - newPerDay);
+    // 提前的词先占位，剩下的名额再按正常规则补。
+    // 提前词也计入每天总词量，超过 target 的部分留到下次，不能把词单撑大。
+    for (const word of advanced) {
+        if (picked.length >= target) break;
+        if (seen.has(word.id)) continue;
+        seen.add(word.id);
+        picked.push({ word, kind: word.status === 'new' ? 'new' : 'review', advanced: true });
+    }
+
+    const remaining = Math.max(0, target - picked.length);
+    const reviewTarget = Math.max(0, remaining - newPerDay);
+    const reviewTaken = () => picked.length - advanced.length;
     take(due, reviewTarget, 'review');
-    if (picked.length < reviewTarget) take(weak, reviewTarget - picked.length, 'error');
-    if (picked.length < reviewTarget) take(future, reviewTarget - picked.length, 'review');
+    if (reviewTaken() < reviewTarget) take(weak, reviewTarget - reviewTaken(), 'error');
+    if (reviewTaken() < reviewTarget) take(future, reviewTarget - reviewTaken(), 'review');
 
     const newQuota = Math.min(maxNew, target - picked.length);
     take(fresh, newQuota, 'new');
 
     if (picked.length < target) take(future, target - picked.length, 'review');
 
-    const reviewItems = picked.filter((p) => p.kind !== 'new');
-    const newItems = picked.filter((p) => p.kind === 'new');
-    const ordered = interleave(reviewItems, newItems, order);
+    const advancedItems = picked.filter((p) => p.advanced);
+    const restItems = picked.filter((p) => !p.advanced);
+    const reviewItems = restItems.filter((p) => p.kind !== 'new');
+    const newItems = restItems.filter((p) => p.kind === 'new');
+    // 提前的词固定在整组最前面，其余照旧穿插
+    const ordered = [...advancedItems, ...interleave(reviewItems, newItems, order)];
 
     const counts = {
         due: due.length,
@@ -158,9 +176,10 @@ export function buildPlan(words, settings, date = todayStr()) {
         future: future.length,
         target,
         planned: ordered.length,
-        newCount: newItems.length,
-        reviewCount: reviewItems.filter((p) => p.kind === 'review').length,
-        errorCount: reviewItems.filter((p) => p.kind === 'error').length,
+        advanced: advancedItems.length,
+        newCount: picked.filter((p) => p.kind === 'new').length,
+        reviewCount: picked.filter((p) => p.kind === 'review').length,
+        errorCount: picked.filter((p) => p.kind === 'error').length,
     };
 
     let message = '';
@@ -171,7 +190,8 @@ export function buildPlan(words, settings, date = todayStr()) {
     } else if (counts.planned < target) {
         message = `今天可安排的词只有 ${counts.planned} 个，可以再导入一些新词。`;
     } else {
-        message = `今天共 ${counts.planned} 个：复习 ${counts.reviewCount} 个、易错 ${counts.errorCount} 个、新词 ${counts.newCount} 个。`;
+        const extra = counts.advanced ? `（其中提前 ${counts.advanced} 个，会先复习）` : '';
+        message = `今天共 ${counts.planned} 个：复习 ${counts.reviewCount} 个、易错 ${counts.errorCount} 个、新词 ${counts.newCount} 个${extra}。`;
     }
 
     return { items: ordered, counts, message };

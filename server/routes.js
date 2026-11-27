@@ -13,7 +13,7 @@ import {
     wordFromRow,
 } from './db.js';
 import { buildExtraPlan, buildPlan, KIND_LABEL, scheduleWord, summarizePlan } from './srs.js';
-import { autoPinyin } from './pinyin.js';
+import { autoPinyin, splitPinyin } from './pinyin.js';
 import { parseImport } from './parse.js';
 import { addDays, clamp, diffDays, normKey, normalizeText, safeJson, todayStr } from './util.js';
 import { getBook, importBook, importEnglishPack, listBooks, listEnglishPacks, bookMeta } from './textbooks.js';
@@ -73,7 +73,7 @@ api.get(
     wrap((req, res) => {
         const settings = getSettings();
         const today = todayStr();
-        const lang = req.query.lang === 'en' ? 'en' : settings.lang || 'zh';
+        const lang = req.query.lang === 'en' ? 'en' : 'zh';
         const active = findActiveSession(lang, today);
         const total = db.prepare('SELECT COUNT(*) AS n FROM words WHERE archived = 0').get().n;
         const dueToday = db
@@ -117,10 +117,20 @@ api.patch(
         if (body.autoSpeak !== undefined) patch.autoSpeak = !!body.autoSpeak;
         if (body.speechRate !== undefined) patch.speechRate = Math.min(1.5, Math.max(0.5, Number(body.speechRate) || 0.85));
         if (body.voiceURI !== undefined) patch.voiceURI = String(body.voiceURI || '');
+        if (body.enVoiceURI !== undefined) patch.enVoiceURI = String(body.enVoiceURI || '');
         if (body.theme !== undefined) patch.theme = ['paper', 'night', 'mint'].includes(body.theme) ? body.theme : 'paper';
         if (body.lang !== undefined) patch.lang = body.lang === 'en' ? 'en' : 'zh';
         if (body.showMeaning !== undefined) patch.showMeaning = !!body.showMeaning;
-        res.json(saveSettings(patch));
+        const settings = saveSettings(patch);
+        // 改小每日总词量后，今天的进行中会话立即收紧，不用等下次打开页面
+        if (patch.dailyTotal !== undefined) {
+            const today = todayStr();
+            for (const lang of ['zh', 'en']) {
+                const active = findActiveSession(lang, today);
+                if (active) trimSessionToDailyTotal(active, settings);
+            }
+        }
+        res.json(settings);
     }),
 );
 
@@ -289,6 +299,121 @@ api.get(
     }),
 );
 
+/**
+ * 汇总全库标红字。只统计 chars_wrong 里有明确字序号的记录；
+ * 整词标红在提交时会展开成所有字，所以也会统计进来。
+ */
+function collectWrongChars(filter = {}) {
+    const rows = db
+        .prepare(
+            `SELECT r.word_id, r.date, r.chars_wrong, w.text, w.pinyin
+             FROM reviews r JOIN words w ON w.id = r.word_id
+             WHERE w.lang = 'zh'
+             ORDER BY r.date DESC`,
+        )
+        .all();
+    const map = new Map();
+    for (const row of rows) {
+        const textChars = Array.from(row.text);
+        const syllables = row.pinyin ? splitPinyin(row.pinyin) : null;
+        for (const index of safeJson(row.chars_wrong, [])) {
+            const char = textChars[index];
+            if (!char) continue;
+            if (filter.char && char !== filter.char) continue;
+            let entry = map.get(char);
+            if (!entry) {
+                entry = { char, pinyin: '', count: 0, lastDate: row.date, words: new Map() };
+                map.set(char, entry);
+            }
+            entry.count += 1;
+            if (row.date > entry.lastDate) entry.lastDate = row.date;
+            let word = entry.words.get(row.word_id);
+            if (!word) {
+                word = { id: row.word_id, text: row.text, pinyin: row.pinyin || '', count: 0 };
+                entry.words.set(row.word_id, word);
+            }
+            word.count += 1;
+            if (!entry.pinyin && syllables && syllables.length === textChars.length) {
+                entry.pinyin = syllables[index] || '';
+            }
+        }
+    }
+    for (const entry of map.values()) {
+        if (!entry.pinyin) entry.pinyin = autoPinyin(entry.char);
+        entry.words = [...entry.words.values()].sort(
+            (a, b) => b.count - a.count || a.text.localeCompare(b.text, 'zh'),
+        );
+    }
+    return map;
+}
+
+api.get(
+    '/chars/wrong',
+    wrap((req, res) => {
+        const q = normalizeText(req.query.q || '').toLowerCase();
+        const sort = ['count', 'recent', 'char'].includes(String(req.query.sort)) ? String(req.query.sort) : 'count';
+        const limit = clamp(req.query.limit || 200, 1, 500);
+        let list = [...collectWrongChars().values()];
+        if (q) {
+            list = list.filter(
+                (entry) =>
+                    entry.char.includes(q) ||
+                    entry.pinyin.toLowerCase().includes(q) ||
+                    entry.words.some((word) => word.text.includes(q)),
+            );
+        }
+        if (sort === 'recent') {
+            list.sort((a, b) => b.lastDate.localeCompare(a.lastDate) || b.count - a.count);
+        } else if (sort === 'char') {
+            list.sort((a, b) => a.pinyin.localeCompare(b.pinyin, 'en') || a.char.localeCompare(b.char, 'zh'));
+        } else {
+            list.sort((a, b) => b.count - a.count || b.lastDate.localeCompare(a.lastDate));
+        }
+        const totalCount = list.reduce((sum, entry) => sum + entry.count, 0);
+        res.json({
+            total: list.length,
+            totalCount,
+            chars: list.slice(0, limit).map((entry) => ({
+                ...entry,
+                words: entry.words.slice(0, 12),
+            })),
+        });
+    }),
+);
+
+api.get(
+    '/chars/:char',
+    wrap((req, res) => {
+        const char = normalizeText(req.params.char);
+        if (Array.from(char).length !== 1) return fail(res, 400, '一次只能查一个字');
+        const entry = collectWrongChars({ char }).get(char);
+        const rows = db
+            .prepare(
+                "SELECT id, text, pinyin, status FROM words WHERE lang = 'zh' AND text LIKE ? ORDER BY id LIMIT 100",
+            )
+            .all(`%${char}%`);
+        const wrongByWord = new Map((entry?.words || []).map((word) => [word.id, word.count]));
+        const words = rows
+            .filter((row) => Array.from(row.text).includes(char))
+            .map((row) => ({
+                id: row.id,
+                text: row.text,
+                pinyin: row.pinyin || '',
+                status: row.status,
+                wrongCount: wrongByWord.get(row.id) || 0,
+            }))
+            .sort((a, b) => b.wrongCount - a.wrongCount || a.id - b.id)
+            .slice(0, 30);
+        res.json({
+            char,
+            pinyin: entry?.pinyin || autoPinyin(char),
+            count: entry?.count || 0,
+            lastDate: entry?.lastDate || null,
+            words,
+        });
+    }),
+);
+
 api.post(
     '/words',
     wrap((req, res) => {
@@ -339,7 +464,11 @@ api.patch(
         if (body.tags !== undefined) set('tags', Array.isArray(body.tags) ? body.tags.join(',') : normalizeText(body.tags));
         if (body.status !== undefined && ['new', 'learning', 'review', 'mastered', 'suspended'].includes(body.status)) {
             set('status', body.status);
-            if (body.status === 'suspended') set('archived', 1);
+            if (body.status === 'suspended') {
+                set('archived', 1);
+                // 暂停后不再占用“提前复习”的位置
+                set('advance_rank', 0);
+            }
             if (body.status !== 'suspended') set('archived', 0);
         }
         if (body.dueDate !== undefined) set('due_date', body.dueDate || null);
@@ -386,14 +515,17 @@ api.post(
                 affected = db
                     .prepare(
                         `UPDATE words SET status = 'new', stage = 0, interval_days = 0, ease = 2.5, due_date = NULL,
-                         last_review = NULL, correct_count = 0, wrong_count = 0, streak = 0, lapses = 0, archived = 0
+                         last_review = NULL, correct_count = 0, wrong_count = 0, streak = 0, lapses = 0, archived = 0,
+                         advance_rank = 0
                          WHERE id IN (${placeholders})`,
                     )
                     .run(...ids).changes;
                 db.prepare(`DELETE FROM reviews WHERE word_id IN (${placeholders})`).run(...ids);
             } else if (action === 'suspend') {
                 affected = db
-                    .prepare(`UPDATE words SET status = 'suspended', archived = 1 WHERE id IN (${placeholders})`)
+                    .prepare(
+                        `UPDATE words SET status = 'suspended', archived = 1, advance_rank = 0 WHERE id IN (${placeholders})`,
+                    )
                     .run(...ids).changes;
             } else {
                 affected = db
@@ -407,6 +539,126 @@ api.post(
         }
         if (action === 'delete') repairActiveSessions();
         res.json({ ok: true, action, affected });
+    }),
+);
+
+api.post(
+    '/words/match',
+    wrap((req, res) => {
+        const raw = Array.isArray(req.body?.texts) ? req.body.texts : [];
+        const texts = [...new Set(raw.map((item) => normalizeText(item)).filter(Boolean))];
+        if (!texts.length) return fail(res, 400, '先输入要选的词语');
+        if (texts.length > 5000) return fail(res, 400, '一次最多匹配 5000 个词');
+
+        // 英文按小写匹配，中文保持原样；两种写法都查一遍
+        const norms = [...new Set(texts.flatMap((text) => [text, text.toLowerCase()]))];
+        const placeholders = norms.map(() => '?').join(',');
+        const rows = db
+            .prepare(
+                `SELECT id, text, norm, lang, status, archived FROM words
+                 WHERE norm IN (${placeholders}) ORDER BY id`,
+            )
+            .all(...norms);
+        const found = new Set(rows.map((row) => row.norm));
+        const unmatched = texts.filter((text) => !found.has(text) && !found.has(text.toLowerCase()));
+        res.json({
+            items: rows.map((row) => ({
+                id: row.id,
+                text: row.text,
+                lang: row.lang,
+                status: row.status,
+                archived: !!row.archived,
+            })),
+            matched: rows.length,
+            unmatched,
+            total: texts.length,
+        });
+    }),
+);
+
+api.post(
+    '/words/batch/advance',
+    wrap((req, res) => {
+        const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+        const ids = [...new Set(raw.map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+        if (!ids.length) return fail(res, 400, '先选择词语');
+        if (ids.length > 10000) return fail(res, 400, '一次最多处理 10000 个词');
+
+        const today = todayStr();
+        const placeholders = ids.map(() => '?').join(',');
+        const rows = db.prepare(`SELECT * FROM words WHERE id IN (${placeholders})`).all(...ids);
+        const byId = new Map(rows.map((row) => [row.id, wordFromRow(row)]));
+
+        // 按传入顺序分组，保持“越靠前越先复习”
+        const groups = new Map();
+        let skipped = 0;
+        for (const id of ids) {
+            const word = byId.get(id);
+            if (!word || word.archived || word.status === 'suspended') {
+                skipped += 1;
+                continue;
+            }
+            if (!groups.has(word.lang)) groups.set(word.lang, []);
+            groups.get(word.lang).push(word);
+        }
+        if (!groups.size) return fail(res, 400, '选中的词都在暂停中，先恢复学习再提前');
+
+        /**
+         * 把这些词标成今天到期，并放到该语言“提前队列”的最前面。
+         * 已经在队列里的词整体后移，保证新选的词按顺序排在最前。
+         */
+        function queueWords(lang, words) {
+            if (!words.length) return;
+            const wordIds = words.map((word) => word.id);
+            const marks = wordIds.map(() => '?').join(',');
+            db.exec('BEGIN');
+            try {
+                db.prepare(
+                    `UPDATE words SET advance_rank = advance_rank + ?
+                     WHERE lang = ? AND advance_rank > 0 AND id NOT IN (${marks})`,
+                ).run(words.length, lang, ...wordIds);
+                const stmt = db.prepare(
+                    `UPDATE words SET advance_rank = ?, due_date = ?,
+                     status = CASE WHEN status = 'new' THEN 'learning' ELSE status END
+                     WHERE id = ?`,
+                );
+                words.forEach((word, index) => stmt.run(index + 1, today, word.id));
+                db.exec('COMMIT');
+            } catch (error) {
+                db.exec('ROLLBACK');
+                throw error;
+            }
+        }
+
+        let advanced = 0;
+        const sessions = [];
+        for (const [lang, words] of groups) {
+            const active = findActiveSession(lang, today);
+            if (!active) {
+                // 没有进行中的练习时只排队，等下次点“听写”再出现
+                queueWords(lang, words);
+                advanced += words.length;
+                continue;
+            }
+
+            // 今天已经答过的词不再重复安排，也不改它的到期时间
+            const answered = new Set(
+                db
+                    .prepare('SELECT word_id FROM session_items WHERE session_id = ? AND result IS NOT NULL')
+                    .all(active.id)
+                    .map((item) => item.word_id),
+            );
+            const fresh = words.filter((word) => !answered.has(word.id));
+            const added = mergeIntoSession(active.id, fresh);
+            if (added) queueWords(lang, fresh);
+            // 提前复习也要受“每天总词量”限制，超出部分留到下次
+            const trimmed = trimSessionToDailyTotal(sessionRow(active.id), getSettings());
+            const total = db.prepare('SELECT COUNT(*) AS n FROM session_items WHERE session_id = ?').get(trimmed.id).n;
+            sessions.push({ id: trimmed.id, lang, added, total });
+        }
+
+        repairActiveSessions();
+        res.json({ ok: true, skipped, advanced, sessions });
     }),
 );
 
@@ -446,7 +698,8 @@ api.post(
         if (!word) return fail(res, 404, '没有找到这个词');
         db.prepare(
             `UPDATE words SET status = 'new', stage = 0, interval_days = 0, ease = 2.5, due_date = NULL,
-             last_review = NULL, correct_count = 0, wrong_count = 0, streak = 0, lapses = 0, archived = 0 WHERE id = ?`,
+             last_review = NULL, correct_count = 0, wrong_count = 0, streak = 0, lapses = 0, archived = 0,
+             advance_rank = 0 WHERE id = ?`,
         ).run(word.id);
         db.prepare('DELETE FROM reviews WHERE word_id = ?').run(word.id);
         res.json(withMeta(getWord(word.id)));
@@ -626,6 +879,123 @@ function findActiveSession(lang, date) {
         .get(date, lang);
 }
 
+/**
+ * 设置里的“每天总词量”包含新词和复习词。
+ * 如果今天的进行中会话是在旧设置下生成的（例如提前复习一次排了 33 个），
+ * 这里把超出总词量、还没批改的词从末尾去掉；已批改的词永远保留。
+ * 额外听写（extra）不受每日总词量限制。
+ */
+function trimSessionToDailyTotal(session, settings) {
+    if (!session || session.status !== 'active') return session;
+    if (session.date !== todayStr()) return session;
+    const config = safeJson(session.config, {});
+    if (config.extra) return session;
+
+    const target = clamp(settings.dailyTotal ?? 20, 1, 100);
+    const rows = db
+        .prepare('SELECT * FROM session_items WHERE session_id = ? ORDER BY position')
+        .all(session.id);
+    if (rows.length <= target) return session;
+
+    // 已批改的词一定保留；剩下的名额按原顺序留给前面的未批改词
+    const graded = rows.filter((row) => row.result);
+    if (graded.length >= target) return session;
+    const keep = new Set(graded.map((row) => row.position));
+    let slots = target - graded.length;
+    for (const row of rows) {
+        if (keep.has(row.position)) continue;
+        if (slots <= 0) break;
+        keep.add(row.position);
+        slots -= 1;
+    }
+
+    const kept = rows.filter((row) => keep.has(row.position));
+    db.exec('BEGIN');
+    try {
+        db.prepare('DELETE FROM session_items WHERE session_id = ?').run(session.id);
+        const stmt = db.prepare(
+            `INSERT INTO session_items (session_id, word_id, position, kind, result, chars_wrong, answered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        );
+        kept.forEach((row, index) => {
+            stmt.run(session.id, row.word_id, index, row.kind, row.result, row.chars_wrong, row.answered_at);
+        });
+        const counts = { new: 0, review: 0, error: 0 };
+        for (const row of kept) counts[row.kind] = (counts[row.kind] || 0) + 1;
+        db.prepare(
+            'UPDATE sessions SET total = ?, new_count = ?, review_count = ?, error_count = ? WHERE id = ?',
+        ).run(kept.length, counts.new || 0, counts.review || 0, counts.error || 0, session.id);
+        db.exec('COMMIT');
+    } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+    }
+    return sessionRow(session.id);
+}
+
+/**
+ * 把一批词挪到会话里“还没答”的最前面，保持传入顺序。
+ * 已答过的词今天不再重复安排；position 是主键的一部分，
+ * 所以先整表读出来、再按新顺序写回，避免边改边冲突。
+ */
+function mergeIntoSession(sessionId, words) {
+    const rows = db
+        .prepare('SELECT * FROM session_items WHERE session_id = ? ORDER BY position')
+        .all(sessionId);
+    const byWord = new Map(rows.map((row) => [row.word_id, row]));
+
+    const movable = [];
+    for (const word of words) {
+        const row = byWord.get(word.id);
+        if (row && row.result) continue; // 今天已经答过，不重复安排
+        movable.push(word);
+    }
+    if (!movable.length) return 0;
+
+    const movableIds = new Set(movable.map((word) => word.id));
+    const entries = rows
+        .filter((row) => !movableIds.has(row.word_id))
+        .map((row) => ({
+            wordId: row.word_id,
+            kind: row.kind,
+            result: row.result,
+            charsWrong: row.chars_wrong,
+            answeredAt: row.answered_at,
+        }));
+
+    let at = entries.findIndex((entry) => !entry.result);
+    if (at < 0) at = entries.length;
+
+    entries.splice(
+        at,
+        0,
+        ...movable.map((word) => ({
+            wordId: word.id,
+            kind: byWord.get(word.id)?.kind || (word.status === 'new' ? 'new' : 'review'),
+            result: null,
+            charsWrong: '[]',
+            answeredAt: null,
+        })),
+    );
+
+    db.exec('BEGIN');
+    try {
+        db.prepare('DELETE FROM session_items WHERE session_id = ?').run(sessionId);
+        const stmt = db.prepare(
+            `INSERT INTO session_items (session_id, word_id, position, kind, result, chars_wrong, answered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        );
+        entries.forEach((entry, index) =>
+            stmt.run(sessionId, entry.wordId, index, entry.kind, entry.result, entry.charsWrong, entry.answeredAt),
+        );
+        db.exec('COMMIT');
+    } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+    }
+    return movable.length;
+}
+
 function createSession({ lang, date, plan, settings, extra = false }) {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -664,9 +1034,11 @@ api.get(
     '/session/today',
     wrap((req, res) => {
         const settings = getSettings();
-        const lang = req.query.lang === 'en' ? 'en' : settings.lang || 'zh';
+        const lang = req.query.lang === 'en' ? 'en' : 'zh';
         const today = todayStr();
-        const active = findActiveSession(lang, today);
+        let active = findActiveSession(lang, today);
+        // 设置改小后，今天的词单也要跟着收紧
+        if (active) active = trimSessionToDailyTotal(active, settings);
         const last = db
             .prepare(
                 `SELECT * FROM sessions s
@@ -676,9 +1048,11 @@ api.get(
             )
             .get(today, lang);
         const plan = buildPlan(allWords(lang), settings, today);
+        const totalWords = db.prepare('SELECT COUNT(*) AS n FROM words WHERE archived = 0 AND lang = ?').get(lang).n;
         res.json({
             lang,
             today,
+            totalWords,
             active: active ? sessionPayload(active) : null,
             lastDone: last ? sessionPayload(last) : null,
             preview: summarizePlan(plan.counts),
@@ -691,10 +1065,10 @@ api.post(
     '/session/start',
     wrap((req, res) => {
         const settings = getSettings();
-        const lang = req.body?.lang === 'en' ? 'en' : settings.lang || 'zh';
+        const lang = req.body?.lang === 'en' ? 'en' : 'zh';
         const today = todayStr();
         const existing = findActiveSession(lang, today);
-        if (existing) return res.json(sessionPayload(existing));
+        if (existing) return res.json(sessionPayload(trimSessionToDailyTotal(existing, settings)));
 
         const plan = buildPlan(allWords(lang), settings, today);
         if (!plan.items.length) return fail(res, 400, plan.message || '今天没有可听写的词');
@@ -708,7 +1082,7 @@ api.post(
     '/session/extra',
     wrap((req, res) => {
         const settings = getSettings();
-        const lang = req.body?.lang === 'en' ? 'en' : settings.lang || 'zh';
+        const lang = req.body?.lang === 'en' ? 'en' : 'zh';
         const count = clamp(req.body?.count ?? 10, 1, 100);
         const today = todayStr();
         const existing = findActiveSession(lang, today);
@@ -726,18 +1100,85 @@ api.get(
     '/sessions/:id',
     wrap((req, res) => {
         repairActiveSessions();
-        const row = sessionRow(req.params.id);
+        let row = sessionRow(req.params.id);
         if (!row) return fail(res, 404, '没有找到这次听写');
+        // 直接打开今天的进行中会话时，也按当前“每天总词量”收紧
+        if (row.status === 'active') row = trimSessionToDailyTotal(row, getSettings());
         res.json(sessionPayload(row));
     }),
 );
+
+/**
+ * 记录一个词的作答结果：更新记忆曲线、写复习记录、回填会话条目。
+ * 语文听写整组提交、英语认词逐词提交都走这里。
+ */
+function applyItemResult(row, item, result, charsWrong = []) {
+    const today = row.date || todayStr();
+    const scheduled = scheduleWord(item.word, result, today);
+    db.prepare(
+        `UPDATE words SET status = ?, stage = ?, interval_days = ?, ease = ?, due_date = ?, last_review = ?,
+         correct_count = ?, wrong_count = ?, streak = ?, lapses = ?, advance_rank = 0 WHERE id = ?`,
+    ).run(
+        scheduled.status,
+        scheduled.stage,
+        scheduled.intervalDays,
+        scheduled.ease,
+        scheduled.dueDate,
+        scheduled.lastReview,
+        scheduled.correctCount,
+        scheduled.wrongCount,
+        scheduled.streak,
+        scheduled.lapses,
+        item.word.id,
+    );
+    insertReview({
+        wordId: item.word.id,
+        sessionId: row.id,
+        date: today,
+        result,
+        charsWrong,
+        intervalBefore: scheduled.intervalBefore,
+        intervalAfter: scheduled.intervalDays,
+    });
+    db.prepare('UPDATE session_items SET result = ?, chars_wrong = ?, answered_at = ? WHERE session_id = ? AND position = ?').run(
+        result,
+        JSON.stringify(charsWrong),
+        new Date().toISOString(),
+        row.id,
+        item.position,
+    );
+    return {
+        wordId: item.word.id,
+        text: item.word.text,
+        pinyin: item.word.pinyin,
+        result,
+        charsWrong,
+        intervalDays: scheduled.intervalDays,
+        dueDate: scheduled.dueDate,
+        status: scheduled.status,
+    };
+}
+
+/** 统计一组会话里已答 / 未答的数量 */
+function sessionProgress(sessionId) {
+    const row = db
+        .prepare(
+            `SELECT COUNT(*) AS total,
+                    COALESCE(SUM(result IS NULL), 0) AS pending,
+                    COALESCE(SUM(result = 'correct'), 0) AS correct,
+                    COALESCE(SUM(result = 'wrong'), 0) AS wrong
+             FROM session_items WHERE session_id = ?`,
+        )
+        .get(sessionId);
+    return { total: row.total, pending: row.pending, correct: row.correct, wrong: row.wrong };
+}
 
 api.post(
     '/sessions/:id/submit',
     wrap((req, res) => {
         const row = sessionRow(req.params.id);
         if (!row) return fail(res, 404, '没有找到这次听写');
-        if (row.status === 'done') return res.json(sessionPayload(row));
+        if (row.status === 'done') return res.json({ ...sessionPayload(row), remaining: 0 });
         if (row.status !== 'active') return fail(res, 400, '这次听写已经结束');
 
         const submitted = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -745,71 +1186,33 @@ api.post(
         const items = sessionItems(row.id);
         if (!items.length) return fail(res, 400, '这次听写没有词');
 
-        const today = row.date || todayStr();
-        let correct = 0;
-        let wrong = 0;
+        // 只批改这次提交里、还没批改过的词；没听过的词保持原样
+        const targetItems = items.filter((item) => byWord.has(item.word.id) && !item.result);
+        if (!targetItems.length) return fail(res, 400, '这次没有可以批改的词');
+
         const results = [];
 
         db.exec('BEGIN');
         try {
-            for (const item of items) {
+            for (const item of targetItems) {
                 const answer = byWord.get(item.word.id);
                 const charsWrong = Array.isArray(answer?.charsWrong)
                     ? [...new Set(answer.charsWrong.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < item.word.text.length))]
                     : [];
                 let result = answer?.result === 'wrong' ? 'wrong' : 'correct';
                 if (charsWrong.length) result = 'wrong';
-                if (result === 'correct') correct += 1;
-                else wrong += 1;
 
-                const scheduled = scheduleWord(item.word, result, today);
-                db.prepare(
-                    `UPDATE words SET status = ?, stage = ?, interval_days = ?, ease = ?, due_date = ?, last_review = ?,
-                     correct_count = ?, wrong_count = ?, streak = ?, lapses = ? WHERE id = ?`,
-                ).run(
-                    scheduled.status,
-                    scheduled.stage,
-                    scheduled.intervalDays,
-                    scheduled.ease,
-                    scheduled.dueDate,
-                    scheduled.lastReview,
-                    scheduled.correctCount,
-                    scheduled.wrongCount,
-                    scheduled.streak,
-                    scheduled.lapses,
-                    item.word.id,
-                );
-                insertReview({
-                    wordId: item.word.id,
-                    sessionId: row.id,
-                    date: today,
-                    result,
-                    charsWrong,
-                    intervalBefore: scheduled.intervalBefore,
-                    intervalAfter: scheduled.intervalDays,
-                });
-                db.prepare('UPDATE session_items SET result = ?, chars_wrong = ?, answered_at = ? WHERE session_id = ? AND position = ?').run(
-                    result,
-                    JSON.stringify(charsWrong),
-                    new Date().toISOString(),
-                    row.id,
-                    item.position,
-                );
-                results.push({
-                    wordId: item.word.id,
-                    text: item.word.text,
-                    pinyin: item.word.pinyin,
-                    result,
-                    charsWrong,
-                    intervalDays: scheduled.intervalDays,
-                    dueDate: scheduled.dueDate,
-                    status: scheduled.status,
-                });
+                results.push(applyItemResult(row, item, result, charsWrong));
             }
-            db.prepare("UPDATE sessions SET status = 'done', finished_at = ?, correct = ?, wrong = ? WHERE id = ?").run(
-                new Date().toISOString(),
-                correct,
-                wrong,
+
+            // 还有没批改的词时保持进行中，下次可以接着听、接着批
+            const progress = sessionProgress(row.id);
+            const done = progress.pending === 0;
+            db.prepare('UPDATE sessions SET status = ?, finished_at = ?, correct = ?, wrong = ? WHERE id = ?').run(
+                done ? 'done' : 'active',
+                done ? new Date().toISOString() : null,
+                progress.correct,
+                progress.wrong,
                 row.id,
             );
             db.exec('COMMIT');
@@ -818,7 +1221,56 @@ api.post(
             throw error;
         }
 
-        res.json({ ...sessionPayload(sessionRow(row.id)), results });
+        const progress = sessionProgress(row.id);
+        res.json({
+            ...sessionPayload(sessionRow(row.id)),
+            results,
+            graded: targetItems.length,
+            remaining: progress.pending,
+        });
+    }),
+);
+
+/**
+ * 逐词作答：英语认词用，点一个词就立刻记一个词。
+ * 全部答完后会话自动结束，刷新或中途退出也不会丢进度。
+ */
+api.post(
+    '/sessions/:id/answer',
+    wrap((req, res) => {
+        const row = sessionRow(req.params.id);
+        if (!row) return fail(res, 404, '没有找到这次练习');
+        if (row.status === 'done') return res.json({ ...sessionPayload(row), remaining: 0 });
+        if (row.status !== 'active') return fail(res, 400, '这次练习已经结束');
+
+        const wordId = Number(req.body?.wordId);
+        const item = sessionItems(row.id).find((entry) => entry.word.id === wordId);
+        if (!item) return fail(res, 404, '这次练习里没有这个词');
+        if (item.result) {
+            return res.json({ ...sessionPayload(row), remaining: sessionProgress(row.id).pending });
+        }
+
+        const result = req.body?.result === 'wrong' ? 'wrong' : 'correct';
+        let progress = sessionProgress(row.id);
+        db.exec('BEGIN');
+        try {
+            applyItemResult(row, item, result, []);
+            progress = sessionProgress(row.id);
+            const done = progress.pending === 0;
+            db.prepare('UPDATE sessions SET correct = ?, wrong = ?, status = ?, finished_at = ? WHERE id = ?').run(
+                progress.correct,
+                progress.wrong,
+                done ? 'done' : 'active',
+                done ? new Date().toISOString() : null,
+                row.id,
+            );
+            db.exec('COMMIT');
+        } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+        }
+
+        res.json({ ...sessionPayload(sessionRow(row.id)), remaining: sessionProgress(row.id).pending });
     }),
 );
 

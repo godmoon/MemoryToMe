@@ -62,7 +62,7 @@ export async function render(root, ctx) {
                     </div>
 
                     <div class="setting-row">
-                        <div class="setting-text"><strong>每天总词量</strong><span>一次听写最多安排多少个词（1–100）。</span></div>
+                        <div class="setting-text"><strong>每天总词量</strong><span>一次听写最多安排多少个词，包含新词和复习词（1–100）。</span></div>
                         <input class="number-input" id="dailyTotal" type="number" min="1" max="100" value="${settings.dailyTotal}">
                     </div>
                     <div class="setting-row">
@@ -81,13 +81,6 @@ export async function render(root, ctx) {
                                 .join('')}
                         </select>
                     </div>
-                    <div class="setting-row">
-                        <div class="setting-text"><strong>当前语言</strong><span>语文听写或英语背单词，共用同一套记忆曲线。</span></div>
-                        <div class="segmented" id="lang-picker">
-                            <button data-lang="zh" class="${settings.lang === 'zh' ? 'active' : ''}">中文</button>
-                            <button data-lang="en" class="${settings.lang === 'en' ? 'active' : ''}">英文</button>
-                        </div>
-                    </div>
                 </div>
 
                 <div class="card card-pad">
@@ -97,7 +90,6 @@ export async function render(root, ctx) {
 
                     ${switchRow('showPinyin', '听写时显示拼音', '关掉后只显示字数提示，难度更高。', settings.showPinyin)}
                     ${switchRow('autoSpeak', '自动朗读', '进入每个词时自动读一遍。', settings.autoSpeak)}
-                    ${switchRow('showMeaning', '英文显示中文释义', '英语模式下，把中文意思作为提示。', settings.showMeaning)}
 
                     <div class="setting-row">
                         <div class="setting-text"><strong>朗读速度</strong><span id="rate-label">${Number(settings.speechRate).toFixed(2)} 倍速</span></div>
@@ -105,14 +97,22 @@ export async function render(root, ctx) {
                     </div>
 
                     <div class="setting-row">
-                        <div class="setting-text"><strong>朗读声音</strong><span>浏览器里可用的中文或英文声音。</span></div>
+                        <div class="setting-text"><strong>中文语音</strong><span>语文听写时使用。</span></div>
                         <select class="select" id="voiceURI" style="width:auto;max-width:230px">
-                            ${voiceOptions(settings.lang, settings.voiceURI)}
+                            ${voiceOptions('zh', settings.voiceURI)}
+                        </select>
+                    </div>
+
+                    <div class="setting-row">
+                        <div class="setting-text"><strong>英文语音</strong><span>英语认词时使用。</span></div>
+                        <select class="select" id="enVoiceURI" style="width:auto;max-width:230px">
+                            ${voiceOptions('en', settings.enVoiceURI)}
                         </select>
                     </div>
 
                     <div class="row wrap" style="margin-top:14px">
-                        <button class="btn" id="test-voice" type="button">试听一句</button>
+                        <button class="btn" id="test-voice" type="button">试听中文</button>
+                        <button class="btn" id="test-en-voice" type="button">试听英文</button>
                         <span class="small muted">不同设备的朗读声音会不一样，选一个孩子听着舒服的。</span>
                     </div>
                 </div>
@@ -191,20 +191,8 @@ export async function render(root, ctx) {
 
     root.querySelector('#order').addEventListener('change', (event) => save({ order: event.target.value }));
 
-    root.querySelector('#lang-picker').addEventListener('click', async (event) => {
-        const button = event.target.closest('[data-lang]');
-        if (!button) return;
-        const lang = button.dataset.lang;
-        root.querySelectorAll('#lang-picker button').forEach((item) => item.classList.toggle('active', item === button));
-        await save({ lang });
-        const voiceSelect = root.querySelector('#voiceURI');
-        voiceSelect.innerHTML = voiceOptions(lang, store.settings.voiceURI);
-        Promise.resolve(ctx.refresh?.()).catch(() => {});
-    });
-
     root.querySelector('#showPinyin').addEventListener('change', (event) => save({ showPinyin: event.target.checked }));
     root.querySelector('#autoSpeak').addEventListener('change', (event) => save({ autoSpeak: event.target.checked }));
-    root.querySelector('#showMeaning').addEventListener('change', (event) => save({ showMeaning: event.target.checked }));
 
     const rate = root.querySelector('#speechRate');
     const rateLabel = root.querySelector('#rate-label');
@@ -214,10 +202,14 @@ export async function render(root, ctx) {
     rate.addEventListener('change', () => save({ speechRate: Number(rate.value) }));
 
     root.querySelector('#voiceURI').addEventListener('change', (event) => save({ voiceURI: event.target.value }));
+    root.querySelector('#enVoiceURI').addEventListener('change', (event) => save({ enVoiceURI: event.target.value }));
 
     root.querySelector('#test-voice').addEventListener('click', () => {
-        const sample = store.settings.lang === 'en' ? 'Spring is coming. The trees are green.' : '春天来了，柳树发芽了。';
-        speak(sample, store.settings.lang, store.settings.speechRate, store.settings.voiceURI);
+        speak('春天来了，柳树发芽了。', 'zh', store.settings.speechRate, store.settings.voiceURI);
+    });
+
+    root.querySelector('#test-en-voice').addEventListener('click', () => {
+        speak('Spring is coming. The trees are green.', 'en', store.settings.speechRate, store.settings.enVoiceURI);
     });
 
     root.querySelector('#theme-picker').addEventListener('click', async (event) => {
@@ -233,7 +225,9 @@ export async function render(root, ctx) {
 
     // 声音列表有时加载较慢，先让页面可用，再补上可选声音
     loadVoices().then(() => {
-        const select = root.querySelector('#voiceURI');
-        if (select) select.innerHTML = voiceOptions(store.settings.lang, store.settings.voiceURI);
+        const zhSelect = root.querySelector('#voiceURI');
+        if (zhSelect) zhSelect.innerHTML = voiceOptions('zh', store.settings.voiceURI);
+        const enSelect = root.querySelector('#enVoiceURI');
+        if (enSelect) enSelect.innerHTML = voiceOptions('en', store.settings.enVoiceURI);
     });
 }

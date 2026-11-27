@@ -21,6 +21,7 @@
     "dev": "node --watch server/index.js",
     "check": "node scripts/check.mjs",
     "build:seed": "node scripts/build-seed.mjs",
+    "build:seed:en": "node scripts/build-english-seed.mjs",
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:restart": "pm2 restart memorytome",
     "pm2:stop": "pm2 stop memorytome",

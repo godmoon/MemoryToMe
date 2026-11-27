@@ -2,7 +2,9 @@ import { refreshStore, store } from './store.js';
 import { applyTheme, cycleTheme, updateStreakUI } from './theme.js';
 import { loadVoices } from './utils.js';
 import * as todayView from './views/today.js';
+import * as englishView from './views/english.js';
 import * as wordsView from './views/words.js';
+import * as charsView from './views/chars.js';
 import * as importView from './views/import.js';
 import * as statsView from './views/stats.js';
 import * as settingsView from './views/settings.js';
@@ -52,7 +54,7 @@ const ctx = {
 async function renderRoute() {
     const route = parseRoute();
     setNav(route);
-    setFocusMode(route.name === 'dictation' || route.name === 'review');
+    setFocusMode(route.name === 'dictation' || route.name === 'review' || (route.name === 'english' && !!route.id));
     window.scrollTo(0, 0);
 
     try {
@@ -60,9 +62,16 @@ async function renderRoute() {
             case 'today':
                 await todayView.render(app, ctx);
                 break;
+            case 'english':
+                if (route.id) await englishView.renderSession(app, ctx, route.id);
+                else await englishView.render(app, ctx);
+                break;
             case 'words':
                 if (route.id) await wordsView.renderDetail(app, ctx, route.id);
                 else await wordsView.render(app, ctx);
+                break;
+            case 'chars':
+                await charsView.render(app, ctx);
                 break;
             case 'import':
                 await importView.render(app, ctx);

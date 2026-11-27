@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { openCharPractice } from '../char-sheet.js';
 import {
     addDays,
     bindDragSelect,
@@ -85,6 +86,7 @@ function wordCard(word, { batch = false, selected = false } = {}) {
                 </div>
                 <div class="word-badges">
                     ${statusBadge(word)}
+                    ${word.advanceRank > 0 ? '<span class="badge badge-blue">已提前</span>' : ''}
                     ${word.wrongCount > 0 ? `<span class="badge badge-coral">错 ${word.wrongCount}</span>` : ''}
                 </div>
             </div>
@@ -284,7 +286,9 @@ export async function render(root, ctx) {
             <div class="batch-actions">
                 <button class="btn btn-sm" id="batch-select-page" type="button">全选本页</button>
                 <button class="btn btn-sm" id="batch-select-all" type="button">全选筛选</button>
+                <button class="btn btn-sm" id="batch-pick" type="button" title="粘贴词语，一行一个，批量选中">输入选词</button>
                 <button class="btn btn-sm btn-ghost" id="batch-clear" type="button">清除</button>
+                <button class="btn btn-sm btn-primary" id="batch-advance" type="button" data-batch-action disabled title="按列表顺序排到下次听写的最前面">提前复习</button>
                 <button class="btn btn-sm" id="batch-reset" type="button" data-batch-action disabled>重置进度</button>
                 <button class="btn btn-sm" id="batch-pause" type="button" data-batch-action disabled>暂停</button>
                 <button class="btn btn-sm btn-coral" id="batch-delete" type="button" data-batch-action disabled>删除</button>
@@ -578,6 +582,83 @@ export async function render(root, ctx) {
         }
     });
 
+    root.querySelector('#batch-pick').addEventListener('click', () => {
+        openModal(
+            `<h2>按词语选择</h2>
+            <p class="modal-sub">一行一个词语，会匹配词库里已有的词；英文不区分大小写，匹配到的词会加入当前选择。</p>
+            <div class="field">
+                <textarea class="textarea" id="pick-text" style="min-height:170px" placeholder="春天
+柳树
+apple"></textarea>
+            </div>
+            <p class="small muted" id="pick-error" style="margin:10px 0 0;color:var(--coral)"></p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-cancel>取消</button>
+                <button class="btn btn-primary" data-pick>选择</button>
+            </div>`,
+            {
+                onMount(panel, close) {
+                    const textarea = panel.querySelector('#pick-text');
+                    const errorNode = panel.querySelector('#pick-error');
+                    const pickButton = panel.querySelector('[data-pick]');
+
+                    panel.querySelector('[data-cancel]').addEventListener('click', close);
+                    textarea.addEventListener('input', () => {
+                        errorNode.textContent = '';
+                    });
+
+                    const submit = async () => {
+                        const texts = [...new Set(
+                            textarea.value
+                                .split(/\r?\n/)
+                                .map((line) => line.trim())
+                                .filter(Boolean),
+                        )];
+                        if (!texts.length) {
+                            errorNode.textContent = '先粘贴一些词语吧。';
+                            textarea.focus();
+                            return;
+                        }
+                        pickButton.disabled = true;
+                        pickButton.textContent = '正在匹配…';
+                        errorNode.textContent = '';
+                        try {
+                            const result = await api.post('/api/words/match', { texts });
+                            for (const item of result.items) {
+                                selected.add(item.id);
+                                selectedMeta.set(item.id, { suspended: item.status === 'suspended' || item.archived });
+                            }
+                            syncCards();
+                            updateBatchBar();
+                            close();
+                            const missed = result.unmatched.length;
+                            if (!result.items.length) {
+                                toast('词库里没有找到这些词', 'error');
+                            } else if (missed) {
+                                toast(`已选中 ${result.items.length} 个词，${missed} 个没找到`, 'success');
+                            } else {
+                                toast(`已选中 ${result.items.length} 个词`, 'success');
+                            }
+                        } catch (error) {
+                            errorNode.textContent = error.message;
+                            pickButton.disabled = false;
+                            pickButton.textContent = '选择';
+                        }
+                    };
+
+                    pickButton.addEventListener('click', submit);
+                    textarea.addEventListener('keydown', (event) => {
+                        // Ctrl / Cmd + Enter 快速提交
+                        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                            event.preventDefault();
+                            submit();
+                        }
+                    });
+                },
+            },
+        );
+    });
+
     root.querySelector('#batch-clear').addEventListener('click', () => {
         selected.clear();
         selectedMeta.clear();
@@ -604,6 +685,64 @@ export async function render(root, ctx) {
             batchBusy = false;
         }
     }
+
+    // 按列表顺序整理选中的词：页面上越靠前的词，越先复习
+    function selectedInOrder() {
+        const ids = [];
+        const seen = new Set();
+        for (const word of currentItems) {
+            if (selected.has(word.id) && !seen.has(word.id)) {
+                seen.add(word.id);
+                ids.push(word.id);
+            }
+        }
+        for (const id of selected) {
+            if (!seen.has(id)) {
+                seen.add(id);
+                ids.push(id);
+            }
+        }
+        return ids;
+    }
+
+    root.querySelector('#batch-advance').addEventListener('click', async () => {
+        if (batchBusy) return;
+        const ids = selectedInOrder();
+        if (!ids.length) return;
+        const button = root.querySelector('#batch-advance');
+        batchBusy = true;
+        button.disabled = true;
+        button.textContent = '正在提前…';
+        try {
+            const result = await api.post('/api/words/batch/advance', { ids });
+            // 只排队，不跳转；清空选择并刷新列表，卡片上会显示“已提前”
+            selected.clear();
+            selectedMeta.clear();
+            syncCards();
+            updateBatchBar();
+            await load();
+            await ctx.refresh?.();
+            const skipped = result.skipped ? `，跳过 ${result.skipped} 个暂停的词` : '';
+            const merged = result.sessions.filter((session) => session.added > 0);
+            if (merged.length) {
+                const label = merged
+                    .map((session) => `${session.lang === 'en' ? '英文' : '中文'} ${session.added} 个`)
+                    .join('，');
+                toast(`已提前 ${label}，下次听写会先复习${skipped}`, 'success');
+            } else if (result.advanced) {
+                toast(`已提前 ${result.advanced} 个词，下次点“听写”会先复习${skipped}`, 'success');
+            } else {
+                toast(`这些词今天已经练过了${skipped}`);
+            }
+        } catch (error) {
+            toast(error.message, 'error');
+        } finally {
+            batchBusy = false;
+            button.disabled = false;
+            button.textContent = '提前复习';
+            updateBatchBar();
+        }
+    });
 
     root.querySelector('#batch-reset').addEventListener('click', async () => {
         const count = selected.size;
@@ -802,12 +941,18 @@ export async function renderDetail(root, ctx, id) {
                 <div class="stack">
                     <div class="card card-pad">
                         <div class="section-head" style="margin-bottom:8px">
-                            <div><h2>易错字</h2><p>点红的字会被记住，下次多留意。</p></div>
+                            <div><h2>易错字</h2><p>点一个字可以单独练，看看它还出现在哪些词里。</p></div>
+                            <a class="chip chip-btn" href="#/chars">全部 →</a>
                         </div>
                         ${
                             wrongChars.length
                                 ? `<div class="char-stat-row">${wrongChars
-                                      .map((char) => `<span class="char-stat"><b>${escapeHtml(char.char)}</b><span>错 ${char.wrong} 次</span></span>`)
+                                      .map(
+                                          (char) => `
+                                      <button class="char-stat" type="button" data-char="${escapeHtml(char.char)}">
+                                          <b>${escapeHtml(char.char)}</b><span>错 ${char.wrong} 次</span>
+                                      </button>`,
+                                      )
                                       .join('')}</div>`
                                 : '<p class="muted small" style="margin:0">还没有被点红的字。</p>'
                         }
@@ -886,6 +1031,18 @@ export async function renderDetail(root, ctx, id) {
 
     root.querySelector('#speak-word').addEventListener('click', () => {
         speak(word.text, word.lang, ctx.store.settings?.speechRate ?? 0.85, ctx.store.settings?.voiceURI || '');
+    });
+
+    // 点易错字：看它出现在哪些词里，也可以单独练
+    root.querySelectorAll('.char-stat[data-char]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            try {
+                const detail = await api.get(`/api/chars/${encodeURIComponent(button.dataset.char)}`);
+                openCharPractice(detail, { settings: ctx.store.settings });
+            } catch (error) {
+                toast(error.message, 'error');
+            }
+        });
     });
 
     root.querySelector('#review-now').addEventListener('click', async () => {

@@ -8,6 +8,18 @@ const TABS = [
     ['backup', '备份与重置'],
 ];
 
+const PASTE_PLACEHOLDER = {
+    auto: '春天\napple,苹果\n柳树,liǔ shù\nschool,学校',
+    zh: '春天\n柳树\n燕子\n或者：春天,chūn tiān',
+    en: 'apple,苹果\nbanana,香蕉\n或者一行一个单词',
+};
+
+const PASTE_SAMPLE = {
+    auto: '春天,chūn tiān\n柳树,liǔ shù\napple,苹果\nschool,学校\nbanana,香蕉',
+    zh: '春天,chūn tiān\n柳树,liǔ shù\n燕子,yàn zi\n小溪,xiǎo xī\n桃花,táo huā',
+    en: 'apple,苹果\nbanana,香蕉\norange,橙子\nschool,学校\nteacher,老师',
+};
+
 function initialTab() {
     const raw = location.hash.split('?')[1] || '';
     const tab = new URLSearchParams(raw).get('tab');
@@ -23,7 +35,7 @@ export async function render(root, ctx) {
         bookType: 'char',
         selected: { char: new Set(), word: new Set() },
         english: null,
-        pasteLang: 'zh',
+        pasteLang: 'auto',
         preview: null,
     };
 
@@ -66,15 +78,16 @@ export async function render(root, ctx) {
             <div class="import-grid">
                 <div class="card card-pad">
                     <div class="section-head" style="margin-bottom:14px">
-                        <div><h2>把词语粘贴进来</h2><p>一行一个，或用逗号分隔；也支持“词,拼音,释义”。</p></div>
+                        <div><h2>把词语粘贴进来</h2><p>一行一个，或用逗号分隔；选“自动”时中英文可以混在一起。</p></div>
                         <div class="segmented" id="paste-lang">
+                            <button data-lang="auto" class="${state.pasteLang === 'auto' ? 'active' : ''}">自动</button>
                             <button data-lang="zh" class="${state.pasteLang === 'zh' ? 'active' : ''}">中文</button>
                             <button data-lang="en" class="${state.pasteLang === 'en' ? 'active' : ''}">英文</button>
                         </div>
                     </div>
                     <div class="field">
                         <label for="paste-text">词语列表</label>
-                        <textarea class="textarea" id="paste-text" placeholder="春天&#10;柳树&#10;燕子&#10;或者：春天,chūn tiān&#10;或者：apple,苹果"></textarea>
+                        <textarea class="textarea" id="paste-text" placeholder="${PASTE_PLACEHOLDER[state.pasteLang]}"></textarea>
                     </div>
                     <div class="row wrap" style="margin-top:12px">
                         <div class="field" style="flex:1 1 180px">
@@ -96,8 +109,9 @@ export async function render(root, ctx) {
                     </div>
                     <ul class="help-list">
                         <li>一行一个词，自动去掉序号、引号和结尾标点。</li>
+                        <li>语言选“自动”时逐行识别，中文和英文可以放在一起。</li>
                         <li>逗号分隔的多个词会拆成多个；<code>词,拼音</code> 会当成拼音。</li>
-                        <li>英文写 <code>apple,苹果</code>，听写时朗读英文、显示中文。</li>
+                        <li>英文写 <code>apple,苹果</code>，认词时显示中文释义。</li>
                         <li>拼音留空会自动生成，多音字可以手动改。</li>
                         <li>已经存在的词会自动跳过，不会重复添加。</li>
                     </ul>
@@ -125,17 +139,11 @@ export async function render(root, ctx) {
             state.preview = null;
             commitButton.disabled = true;
             previewBox.innerHTML = '<p class="muted small" style="margin:0">语言换了，重新预览一下吧。</p>';
-            textarea.placeholder =
-                state.pasteLang === 'en'
-                    ? 'apple,苹果\nbanana,香蕉\n或者一行一个单词'
-                    : '春天\n柳树\n燕子\n或者：春天,chūn tiān';
+            textarea.placeholder = PASTE_PLACEHOLDER[state.pasteLang];
         });
 
         body.querySelector('#fill-sample').addEventListener('click', () => {
-            textarea.value =
-                state.pasteLang === 'en'
-                    ? 'apple,苹果\nbanana,香蕉\norange,橙子\nschool,学校\nteacher,老师'
-                    : '春天,chūn tiān\n柳树,liǔ shù\n燕子,yàn zi\n小溪,xiǎo xī\n桃花,táo huā';
+            textarea.value = PASTE_SAMPLE[state.pasteLang];
             textarea.focus();
         });
 
@@ -166,10 +174,13 @@ export async function render(root, ctx) {
                     : '没有解析出有效的词，检查一下格式吧。';
                 commitButton.disabled = !data.items.length;
                 const stats = data.stats;
+                const zhCount = data.items.filter((item) => item.lang === 'zh').length;
+                const enCount = data.items.length - zhCount;
                 previewBox.innerHTML = `
                     <div class="preview-stats">
                         <span class="chip">解析 ${stats.valid} 个</span>
                         <span class="chip">可新增 ${stats.newCount} 个</span>
+                        ${state.pasteLang === 'auto' && data.items.length ? `<span class="chip">中文 ${zhCount}</span><span class="chip">英文 ${enCount}</span>` : ''}
                         ${stats.existing ? `<span class="chip">已有 ${stats.existing} 个</span>` : ''}
                         ${stats.duplicates ? `<span class="chip">列表内重复 ${stats.duplicates}</span>` : ''}
                         ${stats.invalid ? `<span class="chip">无效 ${stats.invalid}</span>` : ''}
@@ -181,7 +192,10 @@ export async function render(root, ctx) {
                             .map(
                                 (item) => `
                             <div class="preview-item">
-                                <span class="pv-word">${escapeHtml(item.text)}</span>
+                                <span class="pv-main">
+                                    ${state.pasteLang === 'auto' ? `<span class="pv-lang ${item.lang}">${item.lang === 'en' ? 'EN' : '中'}</span>` : ''}
+                                    <span class="pv-word">${escapeHtml(item.text)}</span>
+                                </span>
                                 <span class="pv-py">${escapeHtml(item.pinyin || item.meaning || '')}</span>
                             </div>`,
                             )
@@ -473,43 +487,75 @@ export async function render(root, ctx) {
             return;
         }
 
+        const groups = [];
+        for (const pack of state.english) {
+            const level = pack.level || '其他';
+            let group = groups.find((item) => item.level === level);
+            if (!group) {
+                group = { level, packs: [], count: 0 };
+                groups.push(group);
+            }
+            group.packs.push(pack);
+            group.count += pack.count;
+        }
+
         body.innerHTML = `
             <div class="import-grid">
                 <div class="card card-pad">
                     <div class="section-head" style="margin-bottom:12px">
-                        <div><h2>英语体验词包</h2><p>听写时朗读英文、显示中文释义，记忆曲线和语文完全一致。</p></div>
+                        <div>
+                            <h2>英语词库</h2>
+                            <p>从小学到考研，按学段挑一个词包导入。看英文认中文，认识就行，记忆曲线和语文各自独立。</p>
+                        </div>
                     </div>
-                    <div class="stack">
-                        ${state.english
+                    <div class="pack-groups">
+                        ${groups
                             .map(
-                                (pack) => `
-                            <div class="card card-pad" style="box-shadow:none">
-                                <div class="row-between wrap">
-                                    <div>
-                                        <strong style="font-size:16px">${escapeHtml(pack.title)}</strong>
-                                        <p class="small muted" style="margin:4px 0 0">${pack.count} 个单词 · 已导入 ${pack.imported} 个</p>
+                                (group) => `
+                        <div class="pack-group">
+                            <div class="pack-group-head">
+                                <span class="badge badge-jade">${escapeHtml(group.level)}</span>
+                                <span class="small muted">${group.packs.length} 个词包 · 共 ${group.count} 个单词</span>
+                            </div>
+                            <div class="stack">
+                                ${group.packs
+                                    .map(
+                                        (pack) => `
+                                <div class="card card-pad" style="box-shadow:none">
+                                    <div class="row-between wrap">
+                                        <div>
+                                            <strong style="font-size:16px">${escapeHtml(pack.title)}</strong>
+                                            <p class="small muted" style="margin:4px 0 0">
+                                                ${pack.count} 个单词 · 已导入 ${pack.imported} 个${pack.note ? ` · ${escapeHtml(pack.note)}` : ''}
+                                            </p>
+                                        </div>
+                                        <button class="btn btn-sm ${pack.imported >= pack.count ? '' : 'btn-primary'}"
+                                            data-pack="${pack.id}" ${pack.imported >= pack.count ? 'disabled' : ''}>
+                                            ${pack.imported >= pack.count ? '已全部导入' : '导入词包'}
+                                        </button>
                                     </div>
-                                    <button class="btn btn-sm btn-primary" data-pack="${pack.id}">
-                                        ${pack.imported >= pack.count ? '已全部导入' : '导入词包'}
-                                    </button>
-                                </div>
-                            </div>`,
+                                </div>`,
+                                    )
+                                    .join('')}
+                            </div>
+                        </div>`,
                             )
                             .join('')}
                     </div>
                 </div>
                 <div class="card card-pad">
                     <div class="section-head" style="margin-bottom:10px">
-                        <div><h2>怎么用英语模式</h2><p>在设置里切换语言即可。</p></div>
+                        <div><h2>怎么认英语单词</h2><p>英语是单独的一页，不和语文听写混在一起。</p></div>
                     </div>
                     <ol class="help-list">
-                        <li>导入后到“设置”把当前语言切到英文。</li>
-                        <li>听写页会朗读英文单词，并显示中文释义。</li>
-                        <li>批改时点单词或字母，记录没记住的部分。</li>
-                        <li>语文和英语共用同一套间隔算法，互不影响。</li>
+                        <li>导入词包后，点左侧“英语单词”开始。</li>
+                        <li>先看英文，点下面的“查看释义”看中文意思。</li>
+                        <li>想起来了点“记住了”，没想起来点“没记住”。</li>
+                        <li>不用默写，认识就行；记忆曲线和语文各自独立。</li>
+                        <li>词包可以叠加导入，重复的单词会自动跳过。</li>
                     </ol>
                     <div class="divider"></div>
-                    <a class="btn btn-block" href="#/settings">去设置语言</a>
+                    <a class="btn btn-block" href="#/english">去英语单词</a>
                 </div>
             </div>`;
 

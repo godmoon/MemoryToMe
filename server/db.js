@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS words (
     streak INTEGER NOT NULL DEFAULT 0,
     lapses INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    advance_rank INTEGER NOT NULL DEFAULT 0,
     UNIQUE (norm, lang)
 );
 
@@ -97,6 +98,17 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
+// 旧库没有新列时补上，避免升级后启动失败
+function ensureColumn(table, column, definition) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((item) => item.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+}
+
+// advance_rank > 0 表示被“提前”，数字越小越先复习
+ensureColumn('words', 'advance_rank', 'INTEGER NOT NULL DEFAULT 0');
+
 export const DEFAULT_SETTINGS = {
     dailyTotal: 20,
     newPerDay: 5,
@@ -106,6 +118,7 @@ export const DEFAULT_SETTINGS = {
     autoSpeak: true,
     speechRate: 0.85,
     voiceURI: '',
+    enVoiceURI: '',
     theme: 'paper',
     lang: 'zh',
     showMeaning: true,
@@ -168,6 +181,7 @@ export function wordFromRow(row) {
         streak: row.streak,
         lapses: row.lapses,
         archived: !!row.archived,
+        advanceRank: row.advance_rank || 0,
         accuracy:
             row.correct_count + row.wrong_count > 0
                 ? Math.round((row.correct_count / (row.correct_count + row.wrong_count)) * 100)

@@ -105,34 +105,57 @@ export function importBook(id, options = {}) {
     return result;
 }
 
+function existingEnNorms() {
+    return new Set(
+        db
+            .prepare("SELECT norm FROM words WHERE lang = 'en'")
+            .all()
+            .map((row) => row.norm),
+    );
+}
+
 export function listEnglishPacks() {
-    return englishPacks.map((pack) => ({
-        id: pack.id,
-        title: pack.title,
-        lang: 'en',
-        count: pack.words.length,
-        imported: pack.words.filter((word) => {
-            const row = db.prepare('SELECT 1 FROM words WHERE norm = ? AND lang = ?').get(word.text.toLowerCase(), 'en');
-            return !!row;
-        }).length,
-    }));
+    const existing = existingEnNorms();
+    return englishPacks.map((pack) => {
+        let imported = 0;
+        for (const word of pack.words) {
+            if (existing.has(normKey(word.text, 'en'))) imported += 1;
+        }
+        return {
+            id: pack.id,
+            title: pack.title,
+            level: pack.level || '其他',
+            note: pack.note || '',
+            lang: 'en',
+            count: pack.words.length,
+            imported,
+        };
+    });
 }
 
 export function importEnglishPack(id) {
     const pack = englishMap.get(id);
     if (!pack) return null;
     const result = { inserted: 0, duplicates: 0, invalid: 0 };
-    for (const word of pack.words) {
-        const outcome = insertWord({
-            text: word.text,
-            meaning: word.meaning,
-            lang: 'en',
-            category: '英语',
-            source: JSON.stringify({ book: pack.id, title: pack.title, type: 'word' }),
-        });
-        if (outcome.inserted) result.inserted += 1;
-        else if (outcome.reason === 'duplicate') result.duplicates += 1;
-        else result.invalid += 1;
+    // 词包动辄几千词，放进一个事务里，避免每条都落一次磁盘
+    db.exec('BEGIN');
+    try {
+        for (const word of pack.words) {
+            const outcome = insertWord({
+                text: word.text,
+                meaning: word.meaning,
+                lang: 'en',
+                category: '英语',
+                source: JSON.stringify({ book: pack.id, title: pack.title, type: 'word' }),
+            });
+            if (outcome.inserted) result.inserted += 1;
+            else if (outcome.reason === 'duplicate') result.duplicates += 1;
+            else result.invalid += 1;
+        }
+        db.exec('COMMIT');
+    } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
     }
     return result;
 }

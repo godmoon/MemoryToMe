@@ -1,8 +1,9 @@
-import { autoPinyin, looksLikePinyin } from './pinyin.js';
+import { autoPinyin, isPinyinPhrase } from './pinyin.js';
 import { normKey, normalizeText } from './util.js';
 
 const ZH_RE = /[\u4e00-\u9fff]/;
 const EN_RE = /^[A-Za-z][A-Za-z' -]*$/;
+const FIELD_SEP = /[\t|｜,，]/;
 
 function stripListMarker(line) {
     return line
@@ -37,24 +38,50 @@ function splitFields(line) {
 }
 
 /**
+ * 猜一行是什么语言：看第一个字段。
+ * 含汉字就是中文，纯英文单词就是英文，其余按中文处理。
+ * 粘贴导入选“自动”时逐行调用，中英文可以混在一起。
+ */
+function detectLang(line) {
+    const head = String(line || '').split(FIELD_SEP)[0].trim();
+    if (ZH_RE.test(head)) return 'zh';
+    if (EN_RE.test(cleanWord(head, 'en'))) return 'en';
+    return 'zh';
+}
+
+/**
  * 解析一行。返回若干个词条。
  * 支持：词 / 词,拼音 / 词,拼音,释义 / 词|拼音|释义
  * 也支持：苹果,香蕉,梨（逗号分隔的多个词）
+ * @param {string} rawLine
+ * @param {'zh'|'en'|'auto'} mode
  */
-function parseLine(rawLine, lang) {
+function parseLine(rawLine, mode) {
     const line = stripListMarker(rawLine);
     if (!line || line.startsWith('#')) return [];
+    const lang = mode === 'auto' ? detectLang(line) : mode;
 
     const fields = splitFields(line);
     if (fields) {
         const [text, pinyin, meaning, ...rest] = fields.map((x) => normalizeText(x));
         const cleaned = cleanWord(text, lang);
         if (!isValidWord(cleaned, lang)) return [];
+        if (lang === 'en') {
+            return [
+                {
+                    text: cleaned,
+                    pinyin: '',
+                    meaning: [pinyin, meaning, ...rest].filter(Boolean).join(' '),
+                    lang,
+                },
+            ];
+        }
         return [
             {
                 text: cleaned,
-                pinyin: lang === 'zh' ? (pinyin || '') : '',
-                meaning: lang === 'en' ? [pinyin, meaning, ...rest].filter(Boolean).join(' ') : (meaning || ''),
+                pinyin: isPinyinPhrase(pinyin) ? pinyin : '',
+                meaning: meaning || '',
+                lang,
             },
         ];
     }
@@ -65,16 +92,29 @@ function parseLine(rawLine, lang) {
             const [first, second] = parts;
             const firstWord = cleanWord(first, lang);
             const secondWord = cleanWord(second, lang);
-            if (lang === 'zh' && isValidWord(firstWord, 'zh') && looksLikePinyin(second)) {
-                return [{ text: firstWord, pinyin: normalizeText(second), meaning: '' }];
+
+            if (lang === 'zh' && isValidWord(firstWord, 'zh')) {
+                if (isPinyinPhrase(second)) {
+                    return [{ text: firstWord, pinyin: normalizeText(second), meaning: '', lang }];
+                }
+                if (isValidWord(secondWord, 'zh')) {
+                    return [
+                        { text: firstWord, pinyin: '', meaning: '', lang },
+                        { text: secondWord, pinyin: '', meaning: '', lang },
+                    ];
+                }
+                // 第二列既不是拼音也不是中文（多半是英文），只导入中文这个词
+                return [{ text: firstWord, pinyin: '', meaning: '', lang }];
             }
+
             if (lang === 'en' && isValidWord(firstWord, 'en') && ZH_RE.test(second)) {
-                return [{ text: firstWord, pinyin: '', meaning: secondWord }];
+                return [{ text: firstWord, pinyin: '', meaning: secondWord, lang }];
             }
+
             if (isValidWord(firstWord, lang) && isValidWord(secondWord, lang)) {
                 return [
-                    { text: firstWord, pinyin: '', meaning: '' },
-                    { text: secondWord, pinyin: '', meaning: '' },
+                    { text: firstWord, pinyin: '', meaning: '', lang },
+                    { text: secondWord, pinyin: '', meaning: '', lang },
                 ];
             }
             return [];
@@ -83,24 +123,28 @@ function parseLine(rawLine, lang) {
             // 词,拼音,释义
             const text = cleanWord(parts[0], lang);
             if (isValidWord(text, lang)) {
-                if (lang === 'zh' && looksLikePinyin(parts[1])) {
-                    return [{ text, pinyin: normalizeText(parts[1]), meaning: parts.slice(2).join(' ') }];
+                if (lang === 'zh' && isPinyinPhrase(parts[1])) {
+                    return [{ text, pinyin: normalizeText(parts[1]), meaning: parts.slice(2).join(' '), lang }];
                 }
-                if (lang === 'en' && ZH_RE.test(parts[1])) {
-                    return [{ text, pinyin: '', meaning: parts.slice(1).join(' ') }];
+                if (lang === 'en') {
+                    // 音标可能带符号，取后面所有含汉字的字段当释义
+                    const zhParts = parts.slice(1).filter((p) => ZH_RE.test(p));
+                    if (zhParts.length) {
+                        return [{ text, pinyin: '', meaning: zhParts.join(' '), lang }];
+                    }
                 }
             }
             // 否则当成逗号分隔的多个词
             return parts
                 .map((p) => cleanWord(p, lang))
                 .filter((p) => isValidWord(p, lang))
-                .map((text) => ({ text, pinyin: '', meaning: '' }));
+                .map((text) => ({ text, pinyin: '', meaning: '', lang }));
         }
     }
 
     const text = cleanWord(line, lang);
     if (!isValidWord(text, lang)) return [];
-    return [{ text, pinyin: '', meaning: '' }];
+    return [{ text, pinyin: '', meaning: '', lang }];
 }
 
 function parseJson(text, lang) {
@@ -108,13 +152,18 @@ function parseJson(text, lang) {
     const list = Array.isArray(data) ? data : data.words || data.items || [];
     if (!Array.isArray(list)) throw new Error('JSON 需要是数组，或包含 words 数组');
     return list.map((item) => {
-        if (typeof item === 'string') return { text: item, pinyin: '', meaning: '' };
+        if (typeof item === 'string') {
+            return { text: item, pinyin: '', meaning: '', lang: lang === 'auto' ? detectLang(item) : '' };
+        }
+        const text = item.text || item.word || item.词语 || '';
+        const explicit = item.lang === 'en' || item.lang === 'zh' ? item.lang : '';
         return {
-            text: item.text || item.word || item.词语 || '',
+            text,
             pinyin: item.pinyin || item.拼音 || '',
             meaning: item.meaning || item.translation || item.释义 || '',
             category: item.category || item.分类 || '',
             tags: item.tags || item.标签 || '',
+            lang: explicit || (lang === 'auto' ? detectLang(text) : ''),
         };
     });
 }
@@ -139,10 +188,13 @@ function parseCsv(text, lang) {
 
     return body.map((line) => {
         const cells = line.split(',').map((x) => x.replace(/^"|"$/g, '').trim());
+        const text = cells[textIdx] || '';
+        const rowLang = lang === 'auto' ? detectLang(text) : lang;
         return {
-            text: cells[textIdx] || '',
-            pinyin: lang === 'zh' ? cells[pinyinIdx] || '' : '',
-            meaning: lang === 'en' ? cells[meaningIdx] || cells[pinyinIdx] || '' : cells[meaningIdx] || '',
+            text,
+            pinyin: rowLang === 'zh' ? cells[pinyinIdx] || '' : '',
+            meaning: rowLang === 'en' ? cells[meaningIdx] || cells[pinyinIdx] || '' : cells[meaningIdx] || '',
+            lang: rowLang,
         };
     });
 }
@@ -150,10 +202,10 @@ function parseCsv(text, lang) {
 /**
  * 解析导入文本。
  * @param {string} raw
- * @param {{lang?:string, category?:string, tags?:string}} options
+ * @param {{lang?:'zh'|'en'|'auto', category?:string, tags?:string}} options
  */
 export function parseImport(raw, options = {}) {
-    const lang = options.lang === 'en' ? 'en' : 'zh';
+    const mode = options.lang === 'en' || options.lang === 'auto' ? options.lang : 'zh';
     const text = String(raw || '').replace(/^\ufeff/, '').replace(/\r\n/g, '\n');
     const trimmed = text.trim();
     const stats = { total: 0, valid: 0, duplicates: 0, invalid: 0, autoPinyin: 0 };
@@ -161,18 +213,25 @@ export function parseImport(raw, options = {}) {
 
     let parsed = [];
     let format = 'lines';
+    let dropped = 0;
     try {
         if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-            parsed = parseJson(trimmed, lang);
+            parsed = parseJson(trimmed, mode);
             format = 'json';
         } else if (
             trimmed.includes('\n') &&
             /^\s*(text|word|词语|单词|pinyin|拼音)\s*,/i.test(trimmed.split('\n')[0])
         ) {
-            parsed = parseCsv(trimmed, lang);
+            parsed = parseCsv(trimmed, mode);
             format = 'csv';
         } else {
-            parsed = trimmed.split('\n').flatMap((line) => parseLine(line, lang));
+            for (const rawLine of trimmed.split('\n')) {
+                const line = stripListMarker(rawLine);
+                if (!line || line.startsWith('#')) continue;
+                const lineItems = parseLine(line, mode);
+                if (!lineItems.length) dropped += 1;
+                parsed.push(...lineItems);
+            }
         }
     } catch (error) {
         return { items: [], stats, error: error.message || '无法解析导入内容' };
@@ -181,6 +240,8 @@ export function parseImport(raw, options = {}) {
     const seen = new Set();
     const items = [];
     for (const item of parsed) {
+        const lang =
+            item.lang === 'en' || item.lang === 'zh' ? item.lang : mode === 'auto' ? detectLang(item.text || '') : mode;
         const word = cleanWord(item.text, lang);
         if (!isValidWord(word, lang)) {
             stats.invalid += 1;
@@ -207,7 +268,9 @@ export function parseImport(raw, options = {}) {
         });
     }
 
-    stats.total = stats.valid + stats.duplicates + stats.invalid;
+    // 整行都没解析出来的也算无效，避免“看起来全都导入了”
+    stats.invalid += dropped;
     stats.valid = items.length;
+    stats.total = stats.valid + stats.duplicates + stats.invalid;
     return { items, stats, format, error: null };
 }
